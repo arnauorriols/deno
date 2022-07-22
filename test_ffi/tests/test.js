@@ -3,7 +3,7 @@
 
 // Run using cargo test or `--v8-options=--allow-natives-syntax`
 
-import { assertThrows } from "../../test_util/std/testing/asserts.ts";
+import { assertThrows, assert } from "../../test_util/std/testing/asserts.ts";
 
 const targetDir = Deno.execPath().replace(/[^\/\\]+$/, "");
 const [libPrefix, libSuffix] = {
@@ -247,16 +247,18 @@ function addU32Fast(a, b) {
   return add_u32(a, b);
 };
 
-%PrepareFunctionForOptimization(addU32Fast);
+% PrepareFunctionForOptimization(addU32Fast);
 console.log(addU32Fast(123, 456));
-%OptimizeFunctionOnNextCall(addU32Fast);
+% OptimizeFunctionOnNextCall(addU32Fast);
 console.log(addU32Fast(123, 456));
+assertFastCall(addU32Fast, "addU32Fast has not been optimized");
 
 function addU64Fast(a, b) { return add_usize_fast(a, b); };
-%PrepareFunctionForOptimization(addU64Fast);
+% PrepareFunctionForOptimization(addU64Fast);
 console.log(addU64Fast(2, 3));
-%OptimizeFunctionOnNextCall(addU64Fast);
+% OptimizeFunctionOnNextCall(addU64Fast);
 console.log(addU64Fast(2, 3));
+assertFastCall(addU64Fast, "addU64Fast has not been optimized");
 
 console.log(dylib.symbols.add_i32(123, 456));
 console.log(dylib.symbols.add_u64(0xffffffffn, 0xffffffffn));
@@ -467,3 +469,8 @@ After: ${postStr}`,
 
   console.log("Correct number of resources");
 })();
+
+function assertFastCall(fn) {
+  const status = % GetOptimizationStatus(fn);
+  assert(status & (1 << 4));
+}
