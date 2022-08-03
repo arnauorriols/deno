@@ -189,9 +189,9 @@ const dylib = Deno.dlopen(libPath, {
     parameters: ["u32"],
     result: "u8",
   },
-  add_10_u8: {
-    parameters: ["u8", "u8", "u8", "u8", "u8", "u8", "u8", "u8", "u8", "u8", ],
-    result: "u8",
+  add_many_u16: {
+    parameters: ["u16", "u16", "u16", "u16", "u16", "u16", "u16", "u16", "u16", "u16", "u16", "u16", "u16"],
+    result: "u16",
   },
   // Statics
   "static_u32": {
@@ -486,15 +486,15 @@ console.log(castU32U8Fast(256));
 console.log(castU32U8Fast(256));
 assertFastCall(castU32U8Fast);
 
-function add10U8Fast(a, b, c, d, e, f, g, h, i, j) { return symbols.add_10_u8(a, b, c, d, e, f, g, h, i, j); };
+function addManyU16Fast(a, b, c, d, e, f, g, h, i, j, k, l, m) { return symbols.add_many_u16(a, b, c, d, e, f, g, h, i, j, k, l, m); };
 
-%PrepareFunctionForOptimization(add10U8Fast);
-console.log(add10U8Fast(0, 1, 2, 3, 4, 5, 6, 7, 8, 9));
-%OptimizeFunctionOnNextCall(add10U8Fast);
+%PrepareFunctionForOptimization(addManyU16Fast);
+console.log(addManyU16Fast(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12));
+%OptimizeFunctionOnNextCall(addManyU16Fast);
 // In SysV AMD64 the arguments after the 6th are passed on the stack. Generally the trampoline tail-calls into the FFI function, but
 // in certain cases (e.g. when returning 8 or 16 bit integers) the tail call is not possible and a new stack frame must be created
-console.log(add10U8Fast(0, 1, 2, 3, 4, 5, 6, 7, 8, 9));
-assertFastCall(add10U8Fast);
+console.log(addManyU16Fast(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12));
+assertFastCall(addManyU16Fast);
 
 
 const nestedCallback = new Deno.UnsafeCallback(
