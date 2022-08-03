@@ -282,36 +282,56 @@ impl SysVAmd64 {
       (1, Signed(B)) => dynasm!(self.assembler; .arch x64; movsx edi, sil),
       (1, Unsigned(W)) => dynasm!(self.assembler; .arch x64; movzx edi, si),
       (1, Signed(W)) => dynasm!(self.assembler; .arch x64; movsx edi, si),
-      (1, Unsigned(DW) | Signed(DW)) => dynasm!(self.assembler; .arch x64; mov edi, esi),
-      (1, Unsigned(QW) | Signed(QW)) => dynasm!(self.assembler; .arch x64; mov rdi, rsi),
+      (1, Unsigned(DW) | Signed(DW)) => {
+        dynasm!(self.assembler; .arch x64; mov edi, esi)
+      }
+      (1, Unsigned(QW) | Signed(QW)) => {
+        dynasm!(self.assembler; .arch x64; mov rdi, rsi)
+      }
 
       (2, Unsigned(B)) => dynasm!(self.assembler; .arch x64; movzx esi, dl),
       (2, Signed(B)) => dynasm!(self.assembler; .arch x64; movsx esi, dl),
       (2, Unsigned(W)) => dynasm!(self.assembler; .arch x64; movzx esi, dx),
       (2, Signed(W)) => dynasm!(self.assembler; .arch x64; movsx esi, dx),
-      (2, Unsigned(DW) | Signed(DW)) => dynasm!(self.assembler; .arch x64; mov esi, edx),
-      (2, Unsigned(QW) | Signed(QW)) => dynasm!(self.assembler; .arch x64; mov rsi, rdx),
+      (2, Unsigned(DW) | Signed(DW)) => {
+        dynasm!(self.assembler; .arch x64; mov esi, edx)
+      }
+      (2, Unsigned(QW) | Signed(QW)) => {
+        dynasm!(self.assembler; .arch x64; mov rsi, rdx)
+      }
 
       (3, Unsigned(B)) => dynasm!(self.assembler; .arch x64; movzx edx, cl),
       (3, Signed(B)) => dynasm!(self.assembler; .arch x64; movsx edx, cl),
       (3, Unsigned(W)) => dynasm!(self.assembler; .arch x64; movzx edx, cx),
       (3, Signed(W)) => dynasm!(self.assembler; .arch x64; movsx edx, cx),
-      (3, Unsigned(DW) | Signed(DW)) => dynasm!(self.assembler; .arch x64; mov edx, ecx),
-      (3, Unsigned(QW) | Signed(QW)) => dynasm!(self.assembler; .arch x64; mov rdx, rcx),
+      (3, Unsigned(DW) | Signed(DW)) => {
+        dynasm!(self.assembler; .arch x64; mov edx, ecx)
+      }
+      (3, Unsigned(QW) | Signed(QW)) => {
+        dynasm!(self.assembler; .arch x64; mov rdx, rcx)
+      }
 
       (4, Unsigned(B)) => dynasm!(self.assembler; .arch x64; movzx ecx, r8b),
       (4, Signed(B)) => dynasm!(self.assembler; .arch x64; movsx ecx, r8b),
       (4, Unsigned(W)) => dynasm!(self.assembler; .arch x64; movzx ecx, r8w),
       (4, Signed(W)) => dynasm!(self.assembler; .arch x64; movsx ecx, r8w),
-      (4, Unsigned(DW) | Signed(DW)) => dynasm!(self.assembler; .arch x64; mov ecx, r8d),
-      (4, Unsigned(QW) | Signed(QW)) => dynasm!(self.assembler; .arch x64; mov rcx, r8),
+      (4, Unsigned(DW) | Signed(DW)) => {
+        dynasm!(self.assembler; .arch x64; mov ecx, r8d)
+      }
+      (4, Unsigned(QW) | Signed(QW)) => {
+        dynasm!(self.assembler; .arch x64; mov rcx, r8)
+      }
 
       (5, Unsigned(B)) => dynasm!(self.assembler; .arch x64; movzx r8d, r9b),
       (5, Signed(B)) => dynasm!(self.assembler; .arch x64; movsx r8d, r9b),
       (5, Unsigned(W)) => dynasm!(self.assembler; .arch x64; movzx r8d, r9w),
       (5, Signed(W)) => dynasm!(self.assembler; .arch x64; movsx r8d, r9w),
-      (5, Unsigned(DW) | Signed(DW)) => dynasm!(self.assembler; .arch x64; mov r8d, r9d),
-      (5, Unsigned(QW) | Signed(QW)) => dynasm!(self.assembler; .arch x64; mov r8, r9),
+      (5, Unsigned(DW) | Signed(DW)) => {
+        dynasm!(self.assembler; .arch x64; mov r8d, r9d)
+      }
+      (5, Unsigned(QW) | Signed(QW)) => {
+        dynasm!(self.assembler; .arch x64; mov r8, r9)
+      }
 
       (6, Unsigned(B)) => {
         dynasm!(self.assembler; .arch x64; movzx r9d, BYTE [rsp + rsp_offset])
@@ -896,13 +916,18 @@ impl Aarch64 {
             stack_size += 2;
           }
         }
-        NativeType::I32 | NativeType::U32 => {
+        NativeType::I32 | NativeType::U32 | NativeType::Void => {
           int += 1;
           if int > 0 {
             stack_size += 4;
           }
         }
-        NativeType::I64 | NativeType::U64 => {
+        NativeType::I64
+        | NativeType::U64
+        | NativeType::Function
+        | NativeType::USize
+        | NativeType::ISize
+        | NativeType::Pointer => {
           int += 1;
           if int > 0 {
             stack_size += 8;
