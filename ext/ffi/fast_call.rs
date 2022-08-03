@@ -225,10 +225,12 @@ impl SysVAmd64 {
       // SSE registers remain untouch. Only when the stack is modified, the floats in the stack need to be accomodated
       match float {
         Single => dynasm!(self.assembler
+          ; .arch x64
           ; movss xmm8, [rsp + rsp_offset]
           ; movss [rsp + new_rsp_offset], xmm8
         ),
         Double => dynasm!(self.assembler
+          ; .arch x64
           ; movsd xmm8, [rsp + rsp_offset]
           ; movsd [rsp + new_rsp_offset], xmm8
         ),
@@ -276,81 +278,87 @@ impl SysVAmd64 {
     match (arg_i, arg) {
       // Conventionally, many compilers expect 8 and 16 bit arguments to be sign/zero extended to 32 bits
       // See https://stackoverflow.com/a/36760539/2623340
-      (1, Unsigned(B)) => dynasm!(self.assembler; movzx edi, sil),
-      (1, Signed(B)) => dynasm!(self.assembler; movsx edi, sil),
-      (1, Unsigned(W)) => dynasm!(self.assembler; movzx edi, si),
-      (1, Signed(W)) => dynasm!(self.assembler; movsx edi, si),
-      (1, Unsigned(DW) | Signed(DW)) => dynasm!(self.assembler; mov edi, esi),
-      (1, Unsigned(QW) | Signed(QW)) => dynasm!(self.assembler; mov rdi, rsi),
+      (1, Unsigned(B)) => dynasm!(self.assembler; .arch x64; movzx edi, sil),
+      (1, Signed(B)) => dynasm!(self.assembler; .arch x64; movsx edi, sil),
+      (1, Unsigned(W)) => dynasm!(self.assembler; .arch x64; movzx edi, si),
+      (1, Signed(W)) => dynasm!(self.assembler; .arch x64; movsx edi, si),
+      (1, Unsigned(DW) | Signed(DW)) => dynasm!(self.assembler; .arch x64; mov edi, esi),
+      (1, Unsigned(QW) | Signed(QW)) => dynasm!(self.assembler; .arch x64; mov rdi, rsi),
 
-      (2, Unsigned(B)) => dynasm!(self.assembler; movzx esi, dl),
-      (2, Signed(B)) => dynasm!(self.assembler; movsx esi, dl),
-      (2, Unsigned(W)) => dynasm!(self.assembler; movzx esi, dx),
-      (2, Signed(W)) => dynasm!(self.assembler; movsx esi, dx),
-      (2, Unsigned(DW) | Signed(DW)) => dynasm!(self.assembler; mov esi, edx),
-      (2, Unsigned(QW) | Signed(QW)) => dynasm!(self.assembler; mov rsi, rdx),
+      (2, Unsigned(B)) => dynasm!(self.assembler; .arch x64; movzx esi, dl),
+      (2, Signed(B)) => dynasm!(self.assembler; .arch x64; movsx esi, dl),
+      (2, Unsigned(W)) => dynasm!(self.assembler; .arch x64; movzx esi, dx),
+      (2, Signed(W)) => dynasm!(self.assembler; .arch x64; movsx esi, dx),
+      (2, Unsigned(DW) | Signed(DW)) => dynasm!(self.assembler; .arch x64; mov esi, edx),
+      (2, Unsigned(QW) | Signed(QW)) => dynasm!(self.assembler; .arch x64; mov rsi, rdx),
 
-      (3, Unsigned(B)) => dynasm!(self.assembler; movzx edx, cl),
-      (3, Signed(B)) => dynasm!(self.assembler; movsx edx, cl),
-      (3, Unsigned(W)) => dynasm!(self.assembler; movzx edx, cx),
-      (3, Signed(W)) => dynasm!(self.assembler; movsx edx, cx),
-      (3, Unsigned(DW) | Signed(DW)) => dynasm!(self.assembler; mov edx, ecx),
-      (3, Unsigned(QW) | Signed(QW)) => dynasm!(self.assembler; mov rdx, rcx),
+      (3, Unsigned(B)) => dynasm!(self.assembler; .arch x64; movzx edx, cl),
+      (3, Signed(B)) => dynasm!(self.assembler; .arch x64; movsx edx, cl),
+      (3, Unsigned(W)) => dynasm!(self.assembler; .arch x64; movzx edx, cx),
+      (3, Signed(W)) => dynasm!(self.assembler; .arch x64; movsx edx, cx),
+      (3, Unsigned(DW) | Signed(DW)) => dynasm!(self.assembler; .arch x64; mov edx, ecx),
+      (3, Unsigned(QW) | Signed(QW)) => dynasm!(self.assembler; .arch x64; mov rdx, rcx),
 
-      (4, Unsigned(B)) => dynasm!(self.assembler; movzx ecx, r8b),
-      (4, Signed(B)) => dynasm!(self.assembler; movsx ecx, r8b),
-      (4, Unsigned(W)) => dynasm!(self.assembler; movzx ecx, r8w),
-      (4, Signed(W)) => dynasm!(self.assembler; movsx ecx, r8w),
-      (4, Unsigned(DW) | Signed(DW)) => dynasm!(self.assembler; mov ecx, r8d),
-      (4, Unsigned(QW) | Signed(QW)) => dynasm!(self.assembler; mov rcx, r8),
+      (4, Unsigned(B)) => dynasm!(self.assembler; .arch x64; movzx ecx, r8b),
+      (4, Signed(B)) => dynasm!(self.assembler; .arch x64; movsx ecx, r8b),
+      (4, Unsigned(W)) => dynasm!(self.assembler; .arch x64; movzx ecx, r8w),
+      (4, Signed(W)) => dynasm!(self.assembler; .arch x64; movsx ecx, r8w),
+      (4, Unsigned(DW) | Signed(DW)) => dynasm!(self.assembler; .arch x64; mov ecx, r8d),
+      (4, Unsigned(QW) | Signed(QW)) => dynasm!(self.assembler; .arch x64; mov rcx, r8),
 
-      (5, Unsigned(B)) => dynasm!(self.assembler; movzx r8d, r9b),
-      (5, Signed(B)) => dynasm!(self.assembler; movsx r8d, r9b),
-      (5, Unsigned(W)) => dynasm!(self.assembler; movzx r8d, r9w),
-      (5, Signed(W)) => dynasm!(self.assembler; movsx r8d, r9w),
-      (5, Unsigned(DW) | Signed(DW)) => dynasm!(self.assembler; mov r8d, r9d),
-      (5, Unsigned(QW) | Signed(QW)) => dynasm!(self.assembler; mov r8, r9),
+      (5, Unsigned(B)) => dynasm!(self.assembler; .arch x64; movzx r8d, r9b),
+      (5, Signed(B)) => dynasm!(self.assembler; .arch x64; movsx r8d, r9b),
+      (5, Unsigned(W)) => dynasm!(self.assembler; .arch x64; movzx r8d, r9w),
+      (5, Signed(W)) => dynasm!(self.assembler; .arch x64; movsx r8d, r9w),
+      (5, Unsigned(DW) | Signed(DW)) => dynasm!(self.assembler; .arch x64; mov r8d, r9d),
+      (5, Unsigned(QW) | Signed(QW)) => dynasm!(self.assembler; .arch x64; mov r8, r9),
 
       (6, Unsigned(B)) => {
-        dynasm!(self.assembler; movzx r9d, BYTE [rsp + rsp_offset])
+        dynasm!(self.assembler; .arch x64; movzx r9d, BYTE [rsp + rsp_offset])
       }
       (6, Signed(B)) => {
-        dynasm!(self.assembler; movsx r9d, BYTE [rsp + rsp_offset])
+        dynasm!(self.assembler; .arch x64; movsx r9d, BYTE [rsp + rsp_offset])
       }
       (6, Unsigned(W)) => {
-        dynasm!(self.assembler; movzx r9d, WORD [rsp + rsp_offset])
+        dynasm!(self.assembler; .arch x64; movzx r9d, WORD [rsp + rsp_offset])
       }
       (6, Signed(W)) => {
-        dynasm!(self.assembler; movsx r9d, WORD [rsp + rsp_offset])
+        dynasm!(self.assembler; .arch x64; movsx r9d, WORD [rsp + rsp_offset])
       }
       (6, Unsigned(DW) | Signed(DW)) => {
-        dynasm!(self.assembler; mov r9d, [rsp + rsp_offset])
+        dynasm!(self.assembler; .arch x64; mov r9d, [rsp + rsp_offset])
       }
       (6, Unsigned(QW) | Signed(QW)) => {
-        dynasm!(self.assembler; mov r9, [rsp + rsp_offset])
+        dynasm!(self.assembler; .arch x64; mov r9, [rsp + rsp_offset])
       }
 
       (_, Unsigned(B)) => dynasm!(self.assembler
+        ; .arch x64
         ; movzx eax, BYTE [rsp + rsp_offset]
         ; mov [rsp + new_rsp_offset], eax
       ),
       (_, Signed(B)) => dynasm!(self.assembler
+        ; .arch x64
         ; movsx eax, BYTE [rsp + rsp_offset]
         ; mov [rsp + new_rsp_offset], eax
       ),
       (_, Unsigned(W)) => dynasm!(self.assembler
+        ; .arch x64
         ; movzx eax, WORD [rsp + rsp_offset]
         ; mov [rsp + new_rsp_offset], eax
       ),
       (_, Signed(W)) => dynasm!(self.assembler
+        ; .arch x64
         ; movsx eax, WORD [rsp + rsp_offset]
         ; mov [rsp + new_rsp_offset], eax
       ),
       (_, Unsigned(DW) | Signed(DW)) => dynasm!(self.assembler
+        ; .arch x64
         ; mov eax, [rsp + rsp_offset]
         ; mov [rsp + new_rsp_offset], eax
       ),
       (_, Unsigned(QW) | Signed(QW)) => dynasm!(self.assembler
+        ; .arch x64
         ; mov rax, [rsp + rsp_offset]
         ; mov [rsp + new_rsp_offset], rax
       ),
@@ -359,6 +367,7 @@ impl SysVAmd64 {
 
   fn zero_first_arg(&mut self) {
     dynasm!(self.assembler
+      ; .arch x64
       ; xor rdi, rdi
     );
   }
@@ -366,10 +375,10 @@ impl SysVAmd64 {
   fn cast_return_value(&mut self, rv: NativeType) {
     // 8 and 16 bit integers are extended to 32 bits
     match rv {
-      NativeType::U8 => dynasm!(self.assembler; movzx eax, al),
-      NativeType::I8 => dynasm!(self.assembler; movsx eax, al),
-      NativeType::U16 => dynasm!(self.assembler; movzx eax, ax),
-      NativeType::I16 => dynasm!(self.assembler; movsx eax, ax),
+      NativeType::U8 => dynasm!(self.assembler; .arch x64; movzx eax, al),
+      NativeType::I8 => dynasm!(self.assembler; .arch x64; movsx eax, al),
+      NativeType::U16 => dynasm!(self.assembler; .arch x64; movzx eax, ax),
+      NativeType::I16 => dynasm!(self.assembler; .arch x64; movsx eax, ax),
       _ => (),
     }
   }
@@ -399,6 +408,7 @@ impl SysVAmd64 {
     }
 
     dynasm!(self.assembler
+      ; .arch x64
       ; sub rsp, stack_size as i32
     );
     self.allocated_stack = stack_size;
@@ -406,6 +416,7 @@ impl SysVAmd64 {
 
   fn deallocate_stack(&mut self) {
     dynasm!(self.assembler
+      ; .arch x64
       ; add rsp, self.allocated_stack as i32
     );
   }
@@ -413,6 +424,7 @@ impl SysVAmd64 {
   fn call(&mut self, ptr: *const c_void) {
     // the stack has been aligned during stack allocation
     dynasm!(self.assembler
+      ; .arch x64
       ; mov rax, QWORD ptr as _
       ; call rax
     );
@@ -422,6 +434,7 @@ impl SysVAmd64 {
     // stack pointer is never modified and remains aligned
     // return address remains the one provided by the trampoline's caller (V8)
     dynasm!(self.assembler
+      ; .arch x64
       ; mov rax, QWORD ptr as _
       ; jmp rax
     );
@@ -430,6 +443,7 @@ impl SysVAmd64 {
   fn ret(&mut self) {
     // the stack has been deallocated before ret is called
     dynasm!(self.assembler
+      ; .arch x64
       ; ret
     );
   }
@@ -452,7 +466,6 @@ impl SysVAmd64 {
   }
 }
 
-#[cfg(target_arch = "aarch64")]
 struct Aarch64 {
   assembler: dynasmrt::aarch64::Assembler,
   // As defined in section 6.4.2 of the Aarch64 Procedure Call Standard (PCS) spec, arguments are classified as follows:
@@ -475,7 +488,6 @@ struct Aarch64 {
   stack_allocated: u16,
 }
 
-#[cfg(target_arch = "aarch64")]
 impl Aarch64 {
   // Integer arguments go to the first 8 GPR: x0-x7
   const INTEGER_REG: i32 = 8;
