@@ -12,7 +12,10 @@ use crate::NativeType;
 use crate::Symbol;
 
 pub(crate) fn is_compatible(sym: &Symbol) -> bool {
-  cfg!(all(target_arch = "x86_64", target_family = "unix"))
+  cfg!(any(
+    all(target_arch = "x86_64", target_family = "unix"),
+    all(target_arch = "aarch64", target_vendor = "apple")
+  ))
     && !sym.can_callback
     && is_fast_api_rv(sym.result_type)
 }
@@ -1484,6 +1487,7 @@ mod tests {
       ; str d16, [sp, 16]  // ..
       ; b 0
     );
+    // TODO: TEST VARIABLE ALIGNMENT
     let expected = assembler.finalize().unwrap();
     assert_eq!(trampoline.0.deref(), expected.deref());
   }
