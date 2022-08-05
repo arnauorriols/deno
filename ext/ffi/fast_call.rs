@@ -15,8 +15,7 @@ pub(crate) fn is_compatible(sym: &Symbol) -> bool {
   cfg!(any(
     all(target_arch = "x86_64", target_family = "unix"),
     all(target_arch = "aarch64", target_vendor = "apple")
-  ))
-    && !sym.can_callback
+  )) && !sym.can_callback
     && is_fast_api_rv(sym.result_type)
 }
 
@@ -502,20 +501,20 @@ struct Aarch64Apple {
   //
   // See https://github.com/ARM-software/abi-aa/blob/60a8eb8c55e999d74dac5e368fc9d7e36e38dda4/aapcs64/aapcs64.rst#642parameter-passing-rules
   // counters
-  integer_args: i32,
-  float_args: i32,
+  integer_args: u32,
+  float_args: u32,
 
-  stack_trampoline: u16,
-  stack_original: u16,
+  stack_trampoline: u32,
+  stack_original: u32,
 
-  stack_allocated: u16,
+  stack_allocated: u32,
 }
 
 impl Aarch64Apple {
   // Integer arguments go to the first 8 GPR: x0-x7
-  const INTEGER_REG: i32 = 8;
+  const INTEGER_REG: u32 = 8;
   // Floating-point arguments go to the first 8 SIMD & Floating-Point registers: v0-v1
-  const FLOAT_REG: i32 = 8;
+  const FLOAT_REG: u32 = 8;
 
   fn new() -> Self {
     Self {
@@ -576,7 +575,7 @@ impl Aarch64Apple {
     }
   }
 
-  fn move_float(&mut self, float: Float) {
+  fn move_float(&mut self, arg: Float) {
     // Section 3.2.3 of the SysV AMD64 ABI:
     // > If the class is SSE, the next available vector register is used, the registers
     // > are taken in the order from %xmm0 to %xmm7.
@@ -588,46 +587,40 @@ impl Aarch64Apple {
     self.float_args = arg_i;
 
     let is_in_stack = arg_i > Self::FLOAT_REG;
-    // floats are only moved to accomodate integer movement in the stack
-    let stack_has_moved =
-      self.stack_allocated > 0 || self.integer_args >= Self::INTEGER_REG;
 
-    if is_in_stack && stack_has_moved {
-      let rsp_offset;
-      let new_rsp_offset;
-      if self.stack_allocated > 0 {
-        rsp_offset = self.stack_trampoline as u32 + self.stack_allocated as u32;
-        new_rsp_offset = self.stack_original as u32;
-      } else {
-        rsp_offset = self.stack_trampoline as u32;
-        new_rsp_offset = self.stack_original as u32;
-      }
-
-      debug_assert!(
-        self.stack_allocated == 0
-          || new_rsp_offset <= self.stack_allocated as u32
-      );
-
-      match float {
-        Single => dynasm!(self.assembler
-          ; .arch aarch64
-          // 6.1.2 Aarch64 PCS:
-          // > Registers v8-v15 must be preserved by a callee across subroutine calls;
-          // > the remaining registers (v0-v7, v16-v31) do not need to be preserved (or should be preserved by the caller).
-          ; ldr s16, [sp, rsp_offset]
-          ; str s16, [sp, new_rsp_offset]
-        ),
-        Double => dynasm!(self.assembler
-          ; .arch aarch64
-          ; ldr d16, [sp, rsp_offset]
-          ; str d16, [sp, new_rsp_offset]
-        ),
-      }
-    }
     if is_in_stack {
+      let size = arg as u32;
+      let padding_trampoline = (size - self.stack_trampoline % size) % size;
+      let padding_original = (size - self.stack_original % size) % size;
+
+      println!(
+        "input offset: {}",
+        self.stack_trampoline + padding_trampoline
+      );
+      println!("output offset: {}", self.stack_original + padding_original);
+      // floats are only moved to accomodate integer movement in the stack
+      let stack_has_moved =
+        self.stack_allocated > 0 || self.integer_args >= Self::INTEGER_REG;
+      if stack_has_moved {
+        match arg {
+          Single => dynasm!(self.assembler
+            ; .arch aarch64
+            // 6.1.2 Aarch64 PCS:
+            // > Registers v8-v15 must be preserved by a callee across subroutine calls;
+            // > the remaining registers (v0-v7, v16-v31) do not need to be preserved (or should be preserved by the caller).
+            ; ldr s16, [sp, self.stack_trampoline + padding_trampoline]
+            ; str s16, [sp, self.stack_original + padding_original]
+          ),
+          Double => dynasm!(self.assembler
+            ; .arch aarch64
+            ; ldr d16, [sp, self.stack_trampoline + padding_trampoline]
+            ; str d16, [sp, self.stack_original + padding_original]
+          ),
+        }
+      }
       // The trampoline and the orignal function always have the same amount of floats in the stack
-      self.stack_trampoline += float as u16;
-      self.stack_original += float as u16;
+      self.stack_trampoline += size + padding_trampoline;
+      self.stack_original += size + padding_original;
     }
   }
 
@@ -782,43 +775,50 @@ impl Aarch64Apple {
             dynasm!(self.assembler; .arch aarch64; ldr x7, [sp, self.input_sp_offset()])
           }
         }
-        self.stack_trampoline += bytes;
+        // 16 and 8 bit integers are 32 bit integers in v8
+        self.stack_trampoline += arg.size().max(4);
       }
 
       (_, arg) => {
-        println!("input offset: {}", self.input_sp_offset());
-        println!("output offset: {}", self.output_sp_offset());
+        let size_original = arg.size();
+        // 16 and 8 bit integers are 32 bit integers in v8
+        let size_trampoline = size_original.max(4);
+        let padding_trampoline = (size_trampoline
+          - self.stack_trampoline % size_trampoline)
+          % size_trampoline;
+        let padding_original =
+          (size_original - self.stack_original % size_original) % size_original;
+        println!(
+          "input offset: {}",
+          self.stack_trampoline + padding_trampoline
+        );
+        println!("output offset: {}", self.stack_original + padding_original);
         match arg {
           Signed(B) | Unsigned(B) => dynasm!(self.assembler
             ; .arch aarch64
-            ; ldrb w8, [sp, self.input_sp_offset()]
-            ; strb w8, [sp, self.output_sp_offset()]
+            ; ldr w8, [sp, self.stack_trampoline + padding_trampoline]
+            ; strb w8, [sp, self.stack_original + padding_original]
           ),
           Signed(W) | Unsigned(W) => dynasm!(self.assembler
             ; .arch aarch64
-            ; ldrh w8, [sp, self.input_sp_offset()]
-            ; strh w8, [sp, self.output_sp_offset()]
+            ; ldr w8, [sp, self.stack_trampoline + padding_trampoline]
+            ; strh w8, [sp, self.stack_original + padding_original]
           ),
           Signed(DW) | Unsigned(DW) => dynasm!(self.assembler
             ; .arch aarch64
-            ;  ldr w8, [sp, self.input_sp_offset()]
-            ; str w8, [sp, self.output_sp_offset()]
+            ;  ldr w8, [sp, self.stack_trampoline + padding_trampoline]
+            ; str w8, [sp, self.stack_original + padding_original]
           ),
           Signed(QW) | Unsigned(QW) => dynasm!(self.assembler
             ; .arch aarch64
-            ; ldr x8, [sp, self.input_sp_offset()]
-            ; str x8, [sp, self.output_sp_offset()]
+            ; ldr x8, [sp, self.stack_trampoline + padding_trampoline]
+            ; str x8, [sp, self.stack_original + padding_original]
           ),
         }
-        self.stack_trampoline += bytes;
-        self.stack_original += bytes;
+        self.stack_trampoline += padding_trampoline + size_trampoline;
+        self.stack_original += padding_original + size_original;
       }
     };
-
-    debug_assert!(
-      self.stack_allocated == 0
-        || self.output_sp_offset() <= self.stack_allocated as u32 - 16
-    );
   }
 
   fn input_sp_offset(&self) -> u32 {
@@ -1335,6 +1335,7 @@ impl Aarch64 {
     // 6.2.2 Aarch PCS:
     // > at any point at which memory is accessed via SP, the hardware requires that:
     // > SP mod 16 = 0. The stack must be quad-word aligned.
+    // TODO: CORRECT MODULO LOGIC
     stack_size += stack_size % 16;
 
     dynasm!(self.assembler
@@ -1421,6 +1422,15 @@ enum Integer {
   Signed(Size),
   Unsigned(Size),
 }
+
+impl Integer {
+  fn size(self) -> u32 {
+    match self {
+      Signed(size) | Unsigned(size) => size as u32,
+    }
+  }
+}
+
 use Integer::*;
 
 // TODO: aarch64 uses B, H, W, D
@@ -1459,8 +1469,8 @@ mod tests {
   fn tailcall() {
     let trampoline = Aarch64Apple::compile(&symbol(
       vec![
-        U8, U16, I16, I8, U32, U64, Pointer, Function, I64, I32, F32, F32, F32,
-        F32, F64, F64, F64, F64, F32, F64,
+        U8, U16, I16, I8, U32, U64, Pointer, Function, I64, I32, I16, I8, F32,
+        F32, F32, F32, F64, F64, F64, F64, F32, F64,
       ],
       Void,
     ));
@@ -1481,13 +1491,16 @@ mod tests {
       ; str x8, [sp]       // ..
       ; ldr w8, [sp, 16]   // i32
       ; str w8, [sp, 8]    // ..
-      ; ldr s16, [sp, 20]  // f32
-      ; str s16, [sp, 12]  // ..
-      ; ldr d16, [sp, 24]  // f64
-      ; str d16, [sp, 16]  // ..
+      ; ldr w8, [sp, 20]   // i16
+      ; strh w8, [sp, 12]   // ..
+      ; ldr w8, [sp, 24]   // i8
+      ; strb w8, [sp, 14]   // ..
+      ; ldr s16, [sp, 28]  // f32
+      ; str s16, [sp, 16]  // ..
+      ; ldr d16, [sp, 32]  // f64
+      ; str d16, [sp, 24]  // ..
       ; b 0
     );
-    // TODO: TEST VARIABLE ALIGNMENT
     let expected = assembler.finalize().unwrap();
     assert_eq!(trampoline.0.deref(), expected.deref());
   }
