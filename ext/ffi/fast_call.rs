@@ -863,9 +863,27 @@ impl Aarch64Apple {
   fn tailcall(&mut self, ptr: *const c_void) {
     // stack pointer is never modified and remains aligned
     // frame pointer remains the one provided by the trampoline's caller (V8)
+
+    let mut address = ptr as u64;
+    let mut imm16 = address & 0xFFFF;
     dynasm!(self.assembler
       ; .arch aarch64
-      ; b ptr as u32
+      ; movz x8, imm16 as u32
+    );
+    address >>= 2;
+    let mut shift = 0;
+    while address > 0 {
+      imm16 = address & 0xFFFF;
+      dynasm!(self.assembler
+        ; .arch aarch64
+        ; movk x8, imm16 as u32, lsl shift * 16
+      );
+      address >>= 2;
+      shift += 1;
+    }
+    dynasm!(self.assembler
+        ; .arch aarch64
+        ; br x8
     );
   }
 
