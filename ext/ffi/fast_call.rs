@@ -510,6 +510,381 @@ struct Aarch64Apple {
   stack_allocated: u32,
 }
 
+// trait Abi {
+//   const INTEGER_REG: u32;
+//   const FLOAT_REG: u32;
+
+//   fn compile(sym: &Symbol) -> Trampoline where Self: Default {
+//     let mut compiler = Self::default();
+
+//     let can_tailcall = !compiler.must_cast_return_value(sym.result_type);
+//     if !can_tailcall {
+//       compiler.allocate_stack(&sym.parameter_types);
+//     }
+
+//     for argument in &sym.parameter_types {
+//       compiler.move_left(argument)
+//     }
+//     if !compiler.integer_args_have_moved() {
+//       // the receiver object should never be expected. Avoid its unexpected or deliverated leak
+//       compiler.zero_first_arg();
+//     }
+
+//     if !can_tailcall {
+//       compiler.call(sym.ptr.as_ptr());
+//       if compiler.must_cast_return_value(sym.result_type) {
+//         compiler.cast_return_value(sym.result_type);
+//       }
+//       compiler.deallocate_stack();
+//       compiler.ret();
+//     } else {
+//       compiler.tailcall(sym.ptr.as_ptr());
+//     }
+
+//     Trampoline(compiler.finalize())
+//   }
+
+//   fn move_left(&mut self, arg: &NativeType) {
+//     match arg {
+//       NativeType::F32 => self.move_float(Single),
+//       NativeType::F64 => self.move_float(Double),
+//       NativeType::U8 => self.move_integer(Unsigned(B)),
+//       NativeType::U16 => self.move_integer(Unsigned(W)),
+//       NativeType::U32 | NativeType::Void => self.move_integer(Unsigned(DW)),
+//       NativeType::U64
+//       | NativeType::USize
+//       | NativeType::Function
+//       | NativeType::Pointer => self.move_integer(Unsigned(QW)),
+//       NativeType::I8 => self.move_integer(Signed(B)),
+//       NativeType::I16 => self.move_integer(Signed(W)),
+//       NativeType::I32 => self.move_integer(Signed(DW)),
+//       NativeType::I64 | NativeType::ISize => self.move_integer(Signed(QW)),
+//     }
+//   }
+
+//   fn move_float(&mut self, arg_i: usize, arg: Float) {
+//     let is_in_stack = arg_i > Self::FLOAT_REG;
+
+//     if is_in_stack {
+//       let size = arg as u32;
+//       let padding_trampoline = (size - self.stack_trampoline % size) % size;
+//       let padding_original = (size - self.stack_original % size) % size;
+
+//       println!(
+//         "input offset: {}",
+//         self.stack_trampoline + padding_trampoline
+//       );
+//       println!("output offset: {}", self.stack_original + padding_original);
+//       // floats are only moved to accomodate integer movement in the stack
+//       let stack_has_moved =
+//         self.stack_allocated > 0 || self.integer_args >= Self::INTEGER_REG;
+//       if stack_has_moved {
+//         match arg {
+//           Single => dynasm!(self.assembler
+//             ; .arch aarch64
+//             // 6.1.2 Aarch64 PCS:
+//             // > Registers v8-v15 must be preserved by a callee across subroutine calls;
+//             // > the remaining registers (v0-v7, v16-v31) do not need to be preserved (or should be preserved by the caller).
+//             ; ldr s16, [sp, self.stack_trampoline + padding_trampoline]
+//             ; str s16, [sp, self.stack_original + padding_original]
+//           ),
+//           Double => dynasm!(self.assembler
+//             ; .arch aarch64
+//             ; ldr d16, [sp, self.stack_trampoline + padding_trampoline]
+//             ; str d16, [sp, self.stack_original + padding_original]
+//           ),
+//         }
+//       }
+//       // The trampoline and the orignal function always have the same amount of floats in the stack
+//       self.stack_trampoline += size + padding_trampoline;
+//       self.stack_original += size + padding_original;
+//     }
+//   }
+
+//   fn move_integer(&mut self, arg: Integer) {
+//     // > If the argument is an Integral or Pointer Type, the size of the argument is less than or equal to 8 bytes and the NGRN is less than 8,
+//     // > the argument is copied to the least significant bits in x[NGRN]. The NGRN is incremented by one. The argument has now been allocated.
+//     // > [if NGRN is equal or more than 8]
+//     // > The argument is copied to memory at the adjusted NSAA. The NSAA is incremented by the size of the argument. The argument has now been allocated.
+
+//     let arg_i = self.integer_args + 1;
+//     self.integer_args = arg_i;
+
+//     let (Unsigned(size) | Signed(size)) = arg;
+
+//     // https://developer.apple.com/documentation/xcode/writing-arm64-code-for-apple-platforms:
+//     // > Function arguments may consume slots on the stack that are not multiples of 8 bytes.
+//     // > If the total number of bytes for stack-based arguments is not a multiple of 8 bytes,
+//     // > insert padding on the stack to maintain the 8-byte alignment requirements.
+//     let bytes = size as u16;
+
+//     // move each argument one position to the left. The first argument in the stack moves to the last register.
+//     // If the FFI function is called with a new stack frame, the arguments remaining in the stack are copied to the new stack frame.
+//     // Otherwise, they are copied 8 bytes lower
+//     match (arg_i, arg) {
+//       // From https://developer.apple.com/documentation/xcode/writing-arm64-code-for-apple-platforms:
+//       // > The caller of a function is responsible for signing or zero-extending any argument with fewer than 32 bits.
+//       // > The standard ABI expects the callee to sign or zero-extend those arguments.
+//       // (this applies to register parameters, as stack parameters are not padded in Apple)
+//       (1, Signed(B)) => dynasm!(self.assembler; .arch aarch64; sxtb w0, w1),
+//       (1, Unsigned(B)) => {
+//         dynasm!(self.assembler; .arch aarch64; and w0, w1, 0xFF)
+//       }
+//       (1, Signed(W)) => dynasm!(self.assembler; .arch aarch64; sxth w0, w1),
+//       (1, Unsigned(W)) => {
+//         dynasm!(self.assembler; .arch aarch64; and w0, w1, 0xFFFF)
+//       }
+//       (1, Signed(DW) | Unsigned(DW)) => {
+//         dynasm!(self.assembler; .arch aarch64; mov w0, w1)
+//       }
+//       (1, Signed(QW) | Unsigned(QW)) => {
+//         dynasm!(self.assembler; .arch aarch64; mov x0, x1)
+//       }
+
+//       (2, Signed(B)) => dynasm!(self.assembler; .arch aarch64; sxtb w1, w2),
+//       (2, Unsigned(B)) => {
+//         dynasm!(self.assembler; .arch aarch64; and w1, w2, 0xFF)
+//       }
+//       (2, Signed(W)) => dynasm!(self.assembler; .arch aarch64; sxth w1, w2),
+//       (2, Unsigned(W)) => {
+//         dynasm!(self.assembler; .arch aarch64; and w1, w2, 0xFFFF)
+//       }
+//       (2, Signed(DW) | Unsigned(DW)) => {
+//         dynasm!(self.assembler; .arch aarch64; mov w1, w2)
+//       }
+//       (2, Signed(QW) | Unsigned(QW)) => {
+//         dynasm!(self.assembler; .arch aarch64; mov x1, x2)
+//       }
+
+//       (3, Signed(B)) => dynasm!(self.assembler; .arch aarch64; sxtb w2, w3),
+//       (3, Unsigned(B)) => {
+//         dynasm!(self.assembler; .arch aarch64; and w2, w3, 0xFF)
+//       }
+//       (3, Signed(W)) => dynasm!(self.assembler; .arch aarch64; sxth w2, w3),
+//       (3, Unsigned(W)) => {
+//         dynasm!(self.assembler; .arch aarch64; and w2, w3, 0xFFFF)
+//       }
+//       (3, Signed(DW) | Unsigned(DW)) => {
+//         dynasm!(self.assembler; .arch aarch64; mov w2, w3)
+//       }
+//       (3, Signed(QW) | Unsigned(QW)) => {
+//         dynasm!(self.assembler; .arch aarch64; mov x2, x3)
+//       }
+
+//       (4, Signed(B)) => dynasm!(self.assembler; .arch aarch64; sxtb w3, w4),
+//       (4, Unsigned(B)) => {
+//         dynasm!(self.assembler; .arch aarch64; and w3, w4, 0xFF)
+//       }
+//       (4, Signed(W)) => dynasm!(self.assembler; .arch aarch64; sxth w3, w4),
+//       (4, Unsigned(W)) => {
+//         dynasm!(self.assembler; .arch aarch64; and w3, w4, 0xFFFF)
+//       }
+//       (4, Signed(DW) | Unsigned(DW)) => {
+//         dynasm!(self.assembler; .arch aarch64; mov w3, w4)
+//       }
+//       (4, Signed(QW) | Unsigned(QW)) => {
+//         dynasm!(self.assembler; .arch aarch64; mov x3, x4)
+//       }
+
+//       (5, Signed(B)) => dynasm!(self.assembler; .arch aarch64; sxtb w4, w5),
+//       (5, Unsigned(B)) => {
+//         dynasm!(self.assembler; .arch aarch64; and w4, w5, 0xFF)
+//       }
+//       (5, Signed(W)) => dynasm!(self.assembler; .arch aarch64; sxth w4, w5),
+//       (5, Unsigned(W)) => {
+//         dynasm!(self.assembler; .arch aarch64; and w4, w5, 0xFFFF)
+//       }
+//       (5, Signed(DW) | Unsigned(DW)) => {
+//         dynasm!(self.assembler; .arch aarch64; mov w4, w5)
+//       }
+//       (5, Signed(QW) | Unsigned(QW)) => {
+//         dynasm!(self.assembler; .arch aarch64; mov x4, x5)
+//       }
+
+//       (6, Signed(B)) => dynasm!(self.assembler; .arch aarch64; sxtb w5, w6),
+//       (6, Unsigned(B)) => {
+//         dynasm!(self.assembler; .arch aarch64; and w5, w6, 0xFF)
+//       }
+//       (6, Signed(W)) => dynasm!(self.assembler; .arch aarch64; sxth w5, w6),
+//       (6, Unsigned(W)) => {
+//         dynasm!(self.assembler; .arch aarch64; and w5, w6, 0xFFFF)
+//       }
+//       (6, Signed(DW) | Unsigned(DW)) => {
+//         dynasm!(self.assembler; .arch aarch64; mov w5, w6)
+//       }
+//       (6, Signed(QW) | Unsigned(QW)) => {
+//         dynasm!(self.assembler; .arch aarch64; mov x5, x6)
+//       }
+
+//       (7, Signed(B)) => dynasm!(self.assembler; .arch aarch64; sxtb w6, w7),
+//       (7, Unsigned(B)) => {
+//         dynasm!(self.assembler; .arch aarch64; and w6, w7, 0xFF)
+//       }
+//       (8, Signed(W)) => dynasm!(self.assembler; .arch aarch64; sxth w5, w7),
+//       (8, Unsigned(W)) => {
+//         dynasm!(self.assembler; .arch aarch64; and w5, w7, 0xFFFF)
+//       }
+//       (7, Signed(DW) | Unsigned(DW)) => {
+//         dynasm!(self.assembler; .arch aarch64; mov w6, w7)
+//       }
+//       (7, Signed(QW) | Unsigned(QW)) => {
+//         dynasm!(self.assembler; .arch aarch64; mov x6, x7)
+//       }
+
+//       (8, arg) => {
+//         match arg {
+//           Signed(B) => {
+//             dynasm!(self.assembler; .arch aarch64; ldrsb w7, [sp, self.input_sp_offset()])
+//           }
+//           Unsigned(B) => {
+//             dynasm!(self.assembler; .arch aarch64; ldrb w7, [sp, self.input_sp_offset()])
+//           }
+//           Signed(W) => {
+//             dynasm!(self.assembler; .arch aarch64; ldrsh w7, [sp, self.input_sp_offset()])
+//           }
+//           Unsigned(W) => {
+//             dynasm!(self.assembler; .arch aarch64; ldrh w7, [sp, self.input_sp_offset()])
+//           }
+//           Signed(DW) | Unsigned(DW) => {
+//             dynasm!(self.assembler; .arch aarch64; ldr w7, [sp, self.input_sp_offset()])
+//           }
+//           Signed(QW) | Unsigned(QW) => {
+//             dynasm!(self.assembler; .arch aarch64; ldr x7, [sp, self.input_sp_offset()])
+//           }
+//         }
+//         // 16 and 8 bit integers are 32 bit integers in v8
+//         self.stack_trampoline += arg.size().max(4);
+//       }
+
+//       (_, arg) => {
+//         let size_original = arg.size();
+//         // 16 and 8 bit integers are 32 bit integers in v8
+//         let size_trampoline = size_original.max(4);
+//         let padding_trampoline = (size_trampoline
+//           - self.stack_trampoline % size_trampoline)
+//           % size_trampoline;
+//         let padding_original =
+//           (size_original - self.stack_original % size_original) % size_original;
+//         println!(
+//           "input offset: {}",
+//           self.stack_trampoline + padding_trampoline
+//         );
+//         println!("output offset: {}", self.stack_original + padding_original);
+//         match arg {
+//           Signed(B) | Unsigned(B) => dynasm!(self.assembler
+//             ; .arch aarch64
+//             ; ldr w8, [sp, self.stack_trampoline + padding_trampoline]
+//             ; strb w8, [sp, self.stack_original + padding_original]
+//           ),
+//           Signed(W) | Unsigned(W) => dynasm!(self.assembler
+//             ; .arch aarch64
+//             ; ldr w8, [sp, self.stack_trampoline + padding_trampoline]
+//             ; strh w8, [sp, self.stack_original + padding_original]
+//           ),
+//           Signed(DW) | Unsigned(DW) => dynasm!(self.assembler
+//             ; .arch aarch64
+//             ;  ldr w8, [sp, self.stack_trampoline + padding_trampoline]
+//             ; str w8, [sp, self.stack_original + padding_original]
+//           ),
+//           Signed(QW) | Unsigned(QW) => dynasm!(self.assembler
+//             ; .arch aarch64
+//             ; ldr x8, [sp, self.stack_trampoline + padding_trampoline]
+//             ; str x8, [sp, self.stack_original + padding_original]
+//           ),
+//         }
+//         self.stack_trampoline += padding_trampoline + size_trampoline;
+//         self.stack_original += padding_original + size_original;
+//       }
+//     };
+//   }
+
+//   fn input_sp_offset(&self) -> u32 {
+//     (if self.stack_allocated > 0 {
+//       self.stack_trampoline + self.stack_allocated
+//     } else {
+//       self.stack_trampoline
+//     }) as u32
+//   }
+
+//   fn output_sp_offset(&self) -> u32 {
+//     self.stack_original as u32
+//   }
+
+//   fn zero_first_arg(&mut self) {
+//     dynasm!(self.assembler
+//       ; .arch aarch64
+//       ; mov x0, xzr
+//     );
+//   }
+
+//   fn cast_return_value(&mut self, rv: NativeType) {
+//     // Apple does not need to cast the return value
+//     unreachable!()
+//   }
+
+//   fn allocate_stack(&mut self, params: &[NativeType]) {
+//     // Apple always tail-calls
+//     unreachable!()
+//   }
+
+//   fn deallocate_stack(&mut self) {
+//     // Apple always tail-calls
+//     unreachable!()
+//   }
+
+//   fn call(&mut self, ptr: *const c_void) {
+//     // Apple always tail-calls
+//     unreachable!()
+//   }
+
+//   fn tailcall(&mut self, ptr: *const c_void) {
+//     // stack pointer is never modified and remains aligned
+//     // frame pointer remains the one provided by the trampoline's caller (V8)
+
+//     let mut address = ptr as u64;
+//     let mut imm16 = address & 0xFFFF;
+//     dynasm!(self.assembler
+//       ; .arch aarch64
+//       ; movz x8, imm16 as u32
+//     );
+//     address >>= 16;
+//     let mut shift = 16;
+//     while address > 0 {
+//       imm16 = address & 0xFFFF;
+//       dynasm!(self.assembler
+//         ; .arch aarch64
+//         ; movk x8, imm16 as u32, lsl shift
+//       );
+//       address >>= 16;
+//       shift += 16;
+//     }
+//     dynasm!(self.assembler
+//         ; .arch aarch64
+//         ; br x8
+//     );
+//   }
+
+//   fn ret(&mut self) {
+//     // Apple always tail-calls
+//     unreachable!()
+//   }
+
+//   fn integer_args_have_moved(&self) -> bool {
+//     self.integer_args > 0
+//   }
+
+//   fn must_cast_return_value(&self, _rv: NativeType) -> bool {
+//     // V8 only supports i32 and u32 return types for integers
+//     // We support 8 and 16 bit integers by extending them to 32 bits in the trampoline before returning
+
+//     // return values follow the same rules as register arguments. Therefore, in Apple the RV is sign/zero extended by the callee.
+//     false
+//   }
+
+//   fn finalize(self) -> ExecutableBuffer {
+//     self.assembler.finalize().unwrap()
+//   }
+// }
 impl Aarch64Apple {
   // Integer arguments go to the first 8 GPR: x0-x7
   const INTEGER_REG: u32 = 8;
@@ -793,6 +1168,7 @@ impl Aarch64Apple {
           self.stack_trampoline + padding_trampoline
         );
         println!("output offset: {}", self.stack_original + padding_original);
+        dynasm!(self.assembler; brk 1);
         match arg {
           Signed(B) | Unsigned(B) => dynasm!(self.assembler
             ; .arch aarch64
@@ -870,16 +1246,16 @@ impl Aarch64Apple {
       ; .arch aarch64
       ; movz x8, imm16 as u32
     );
-    address >>= 2;
-    let mut shift = 0;
+    address >>= 16;
+    let mut shift = 16;
     while address > 0 {
       imm16 = address & 0xFFFF;
       dynasm!(self.assembler
         ; .arch aarch64
-        ; movk x8, imm16 as u32, lsl shift * 16
+        ; movk x8, imm16 as u32, lsl shift
       );
-      address >>= 2;
-      shift += 1;
+      address >>= 16;
+      shift += 16;
     }
     dynasm!(self.assembler
         ; .arch aarch64
