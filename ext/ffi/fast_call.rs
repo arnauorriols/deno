@@ -390,7 +390,7 @@ impl SysVAmd64 {
   fn zero_first_arg(&mut self) {
     dynasm!(self.assembler
       ; .arch x64
-      ; xor rdi, rdi
+      ; xor edi, edi
     );
   }
 
@@ -1118,9 +1118,9 @@ impl Aarch64Apple {
       (7, Unsigned(B)) => {
         dynasm!(self.assembler; .arch aarch64; and w6, w7, 0xFF)
       }
-      (8, Signed(W)) => dynasm!(self.assembler; .arch aarch64; sxth w5, w7),
-      (8, Unsigned(W)) => {
-        dynasm!(self.assembler; .arch aarch64; and w5, w7, 0xFFFF)
+      (7, Signed(W)) => dynasm!(self.assembler; .arch aarch64; sxth w6, w7),
+      (7, Unsigned(W)) => {
+        dynasm!(self.assembler; .arch aarch64; and w6, w7, 0xFFFF)
       }
       (7, Signed(DW) | Unsigned(DW)) => {
         dynasm!(self.assembler; .arch aarch64; mov w6, w7)
@@ -1132,22 +1132,22 @@ impl Aarch64Apple {
       (8, arg) => {
         match arg {
           Signed(B) => {
-            dynasm!(self.assembler; .arch aarch64; ldrsb w7, [sp, self.input_sp_offset()])
+            dynasm!(self.assembler; .arch aarch64; ldrsb w7, [sp, self.stack_trampoline])
           }
           Unsigned(B) => {
-            dynasm!(self.assembler; .arch aarch64; ldrb w7, [sp, self.input_sp_offset()])
+            dynasm!(self.assembler; .arch aarch64; ldrb w7, [sp, self.stack_trampoline])
           }
           Signed(W) => {
-            dynasm!(self.assembler; .arch aarch64; ldrsh w7, [sp, self.input_sp_offset()])
+            dynasm!(self.assembler; .arch aarch64; ldrsh w7, [sp, self.stack_trampoline])
           }
           Unsigned(W) => {
-            dynasm!(self.assembler; .arch aarch64; ldrh w7, [sp, self.input_sp_offset()])
+            dynasm!(self.assembler; .arch aarch64; ldrh w7, [sp, self.stack_trampoline])
           }
           Signed(DW) | Unsigned(DW) => {
-            dynasm!(self.assembler; .arch aarch64; ldr w7, [sp, self.input_sp_offset()])
+            dynasm!(self.assembler; .arch aarch64; ldr w7, [sp, self.stack_trampoline])
           }
           Signed(QW) | Unsigned(QW) => {
-            dynasm!(self.assembler; .arch aarch64; ldr x7, [sp, self.input_sp_offset()])
+            dynasm!(self.assembler; .arch aarch64; ldr x7, [sp, self.stack_trampoline])
           }
         }
         // 16 and 8 bit integers are 32 bit integers in v8
@@ -1168,7 +1168,6 @@ impl Aarch64Apple {
           self.stack_trampoline + padding_trampoline
         );
         println!("output offset: {}", self.stack_original + padding_original);
-        dynasm!(self.assembler; brk 1);
         match arg {
           Signed(B) | Unsigned(B) => dynasm!(self.assembler
             ; .arch aarch64
@@ -1195,18 +1194,6 @@ impl Aarch64Apple {
         self.stack_original += padding_original + size_original;
       }
     };
-  }
-
-  fn input_sp_offset(&self) -> u32 {
-    (if self.stack_allocated > 0 {
-      self.stack_trampoline + self.stack_allocated
-    } else {
-      self.stack_trampoline
-    }) as u32
-  }
-
-  fn output_sp_offset(&self) -> u32 {
-    self.stack_original as u32
   }
 
   fn zero_first_arg(&mut self) {
@@ -1285,6 +1272,331 @@ impl Aarch64Apple {
   }
 }
 
+struct X64Windows {
+  assembler: dynasmrt::x64::Assembler,
+  args: i32,
+
+  allocated_stack: u16,
+}
+
+impl X64Windows {
+  // > Integer valued arguments in the leftmost four positions are passed in left-to-right order in RCX, RDX, R8, and R9
+  // > [...]
+  // > Any floating-point and double-precision arguments in the first four parameters are passed in XMM0 - XMM3, depending on position
+  const REGISTER_ARGS: i32 = 4;
+
+  fn new() -> Self {
+    Self {
+      assembler: dynasmrt::x64::Assembler::new().unwrap(),
+      args: 0,
+      allocated_stack: 0,
+    }
+  }
+
+  fn compile(sym: &Symbol) -> Trampoline {
+    // TODO: Apple Silicon & windows x64 support
+    let mut compiler = Self::new();
+
+    let can_tailcall = !compiler.must_cast_return_value(sym.result_type);
+    if !can_tailcall {
+      compiler.allocate_stack(&sym.parameter_types);
+    }
+
+    for argument in &sym.parameter_types {
+      compiler.move_left(argument)
+    }
+    if !compiler.is_recv_overriden() {
+      // the receiver object should never be expected. Avoid its unexpected or deliverated leak
+      compiler.zero_first_arg();
+    }
+
+    if !can_tailcall {
+      compiler.call(sym.ptr.as_ptr());
+      if compiler.must_cast_return_value(sym.result_type) {
+        compiler.cast_return_value(sym.result_type);
+      }
+      compiler.deallocate_stack();
+      compiler.ret();
+    } else {
+      compiler.tailcall(sym.ptr.as_ptr());
+    }
+
+    Trampoline(compiler.finalize())
+  }
+
+  fn move_left(&mut self, arg: &NativeType) {
+    match arg {
+      NativeType::F32 => self.move_sse(Single),
+      NativeType::F64 => self.move_sse(Double),
+      NativeType::U8 => self.move_integer(Unsigned(B)),
+      NativeType::U16 => self.move_integer(Unsigned(W)),
+      NativeType::U32 | NativeType::Void => self.move_integer(Unsigned(DW)),
+      NativeType::U64
+      | NativeType::USize
+      | NativeType::Function
+      | NativeType::Pointer => self.move_integer(Unsigned(QW)),
+      NativeType::I8 => self.move_integer(Signed(B)),
+      NativeType::I16 => self.move_integer(Signed(W)),
+      NativeType::I32 => self.move_integer(Signed(DW)),
+      NativeType::I64 | NativeType::ISize => self.move_integer(Signed(QW)),
+    }
+  }
+
+  fn move_sse(&mut self, arg: Float) {
+    self.move_arg(F(arg))
+  }
+
+  fn move_integer(&mut self, arg: Integer) {
+    let (Signed(size) | Unsigned(size)) = arg;
+    self.move_arg(I(size))
+  }
+
+  fn move_arg(&mut self, arg: Argument) {
+    let arg_i = self.args + 1;
+    self.args = arg_i;
+
+    // adding 1 to the integer amount to account for the receiver
+    // Not substrating REGISTER-ARGS because of shadow space for register parameters
+    let pos_in_stack = 1 + arg_i;
+    let new_pos_in_stack = pos_in_stack - 1;
+
+    let rsp_offset;
+    let new_rsp_offset;
+
+    if self.allocated_stack > 0 {
+      rsp_offset = pos_in_stack * 8 + self.allocated_stack as i32;
+      // creating a new stack frame for the to be called FFI function
+      // substract 8 bytes because this new stack frame does not yet have return address
+      new_rsp_offset = new_pos_in_stack * 8 - 8;
+    } else {
+      rsp_offset = pos_in_stack * 8;
+      new_rsp_offset = new_pos_in_stack * 8;
+    }
+
+    debug_assert!(
+      self.allocated_stack == 0
+        || new_rsp_offset <= self.allocated_stack as i32
+    );
+
+    // move each argument one position to the left. The first argument in the stack moves to the last register (r9).
+    // If the FFI function is called with a new stack frame, the arguments remaining in the stack are copied to the new stack frame.
+    // Otherwise, they are copied 8 bytes lower
+    match (arg_i, arg) {
+      (1, I(B | W | DW)) => dynasm!(self.assembler; .arch x64; mov ecx, edx),
+      (1, I(QW)) => dynasm!(self.assembler; .arch x64; mov rcx, rdx),
+      (1, F(_)) => {
+        // Use movaps for doubles as well, benefits of smaller encoding outweight those of using the correct instruction for the type (movapd)
+        dynasm!(self.assembler; .arch x64; xor ecx, ecx; movaps xmm0, xmm1)
+      }
+
+      (2, I(B | W | DW)) => dynasm!(self.assembler; .arch x64; mov edx, r8d),
+      (2, I(QW)) => dynasm!(self.assembler; .arch x64; mov rdx, r8),
+      (2, F(_)) => {
+        dynasm!(self.assembler; .arch x64; movaps xmm1, xmm2)
+      }
+
+      (3, I(B | W | DW)) => dynasm!(self.assembler; .arch x64; mov r8d, r9d),
+      (3, I(QW)) => dynasm!(self.assembler; .arch x64; mov r8, r9),
+      (3, F(_)) => {
+        dynasm!(self.assembler; .arch x64; movaps xmm2, xmm3)
+      }
+
+      (4, I(B | W | DW)) => {
+        dynasm!(self.assembler; .arch x64; mov r9d, [rsp + rsp_offset])
+      }
+      (4, I(QW)) => dynasm!(self.assembler; .arch x64; mov r9, [rsp + rsp_offset]),
+      (4, F(_)) => {
+        // parameter 4 is always 16-byte aligned, so we can use movaps instead of movups
+        dynasm!(self.assembler; .arch x64; movaps xmm3, [rsp + rsp_offset])
+      }
+      (_, I(B | W | DW)) => {
+        dynasm!(self.assembler
+          ; .arch x64
+          ; mov eax, [rsp + rsp_offset]
+          ; mov [rsp + new_rsp_offset], eax
+        )
+      }
+      (_, I(QW)) => {
+        dynasm!(self.assembler
+          ; .arch x64
+          ; mov rax, [rsp + rsp_offset]
+          ; mov [rsp + new_rsp_offset], rax
+        )
+      }
+      (_, F(_)) => {
+        dynasm!(self.assembler
+          ; .arch x64
+          ; movups xmm4, [rsp + rsp_offset]
+          ; movups [rsp + new_rsp_offset], xmm4
+        )
+      } //   (1, I(B)) => dynasm!(self.assembler; .arch x64; mov cl, dl),
+        //   (1, I(W)) => dynasm!(self.assembler; .arch x64; mov cx, dx),
+        //   (1, I(DW)) => dynasm!(self.assembler; .arch x64; mov ecx, edx),
+        //   (1, I(QW)) => dynasm!(self.assembler; .arch x64; mov rcx, rdx),
+        //   (1, F(Single)) => {
+        //     dynasm!(self.assembler; .arch x64; xor ecx, ecx; movaps xmm0, xmm1)
+        //   }
+        //   (1, F(Double)) => {
+        //     dynasm!(self.assembler; .arch x64; xor ecx, ecx; movapd xmm0, xmm1)
+        //   }
+
+        //   (2, I(B)) => dynasm!(self.assembler; .arch x64; mov dl, r8b),
+        //   (2, I(W)) => dynasm!(self.assembler; .arch x64; mov dx, r8w),
+        //   (2, I(DW)) => dynasm!(self.assembler; .arch x64; mov edx, r8d),
+        //   (2, I(QW)) => dynasm!(self.assembler; .arch x64; mov rdx, r8),
+        //   (2, F(Single)) => dynasm!(self.assembler; .arch x64; movaps xmm1, xmm2),
+        //   (2, F(Double)) => dynasm!(self.assembler; .arch x64; movapd xmm1, xmm2),
+
+        //   (3, I(B)) => dynasm!(self.assembler; .arch x64; mov r8b, r9b),
+        //   (3, I(W)) => dynasm!(self.assembler; .arch x64; mov r8w, r9w),
+        //   (3, I(DW)) => dynasm!(self.assembler; .arch x64; mov r8d, r9d),
+        //   (3, I(QW)) => dynasm!(self.assembler; .arch x64; mov r8, r9),
+        //   (3, F(Single)) => dynasm!(self.assembler; .arch x64; movaps xmm2, xmm3),
+        //   (3, F(Double)) => dynasm!(self.assembler; .arch x64; movapd xmm2, xmm3),
+
+        //   (4, I(B)) => {
+        //     dynasm!(self.assembler; .arch x64; mov r9b, [rsp + rsp_offset])
+        //   }
+        //   (4, I(W)) => {
+        //     dynasm!(self.assembler; .arch x64; mov r9w, [rsp + rsp_offset])
+        //   }
+        //   (4, I(DW)) => {
+        //     dynasm!(self.assembler; .arch x64; mov r9d, [rsp + rsp_offset])
+        //   }
+        //   (4, I(QW)) => {
+        //     dynasm!(self.assembler; .arch x64; mov r9, [rsp + rsp_offset])
+        //   }
+        //   (4, F(Single)) => {
+        //     dynasm!(self.assembler; .arch x64; movaps xmm3, [rsp + rsp_offset])
+        //   }
+        //   (4, F(Double)) => {
+        //     dynasm!(self.assembler; .arch x64; movapd xmm3, [rsp + rsp_offset])
+        //   }
+
+        //   (_, I(B)) => {
+        //     dynasm!(self.assembler
+        //       ;.arch x64
+        //       ; mov eax, [rsp + rsp_offset]  // Document register renaming
+        //       ; mov [rsp + new_rsp_offset], al
+        //     )
+        //   }
+        //   (_, I(W)) => {
+        //     dynasm!(self.assembler
+        //       ;.arch x64
+        //       ; mov eax, [rsp + rsp_offset]
+        //       ; mov [rsp + new_rsp_offset], ax
+        //     )
+        //   }
+        //   (_, I(DW)) => {
+        //     dynasm!(self.assembler
+        //       ;.arch x64
+        //       ; mov eax, [rsp + rsp_offset]
+        //       ; mov [rsp + new_rsp_offset], eax
+        //     )
+        //   }
+        //   (_, I(QW)) => {
+        //     dynasm!(self.assembler
+        //       ;.arch x64
+        //       ; mov rax, [rsp + rsp_offset]
+        //       ; mov [rsp + new_rsp_offset], rax
+        //     )
+        //   }
+        //   (_, F(Single) | F(Double)) => {
+        //     dynasm!(self.assembler
+        //       ; .arch x64
+        //       ; movups xmm4, [rsp + rsp_offset]
+        //       ; movups [rsp + new_rsp_offset], xmm4
+        //     )
+        //   }
+    }
+  }
+
+  fn zero_first_arg(&mut self) {
+    dynasm!(self.assembler
+      ; .arch x64
+      ; xor ecx, ecx
+    );
+  }
+
+  fn cast_return_value(&mut self, rv: NativeType) {
+    // 8 and 16 bit integers are extended to 32 bits
+    match rv {
+      NativeType::U8 => dynasm!(self.assembler; .arch x64; movzx eax, al),
+      NativeType::I8 => dynasm!(self.assembler; .arch x64; movsx eax, al),
+      NativeType::U16 => dynasm!(self.assembler; .arch x64; movzx eax, ax),
+      NativeType::I16 => dynasm!(self.assembler; .arch x64; movsx eax, ax),
+      _ => (),
+    }
+  }
+
+  fn allocate_stack(&mut self, params: &[NativeType]) {
+    let mut stack_size = 0u16;
+    stack_size += 32; // Shadow space
+    stack_size +=
+      params.iter().skip(Self::REGISTER_ARGS as usize).count() as u16 * 8;
+
+    // Align stack (considering 8 byte caller return address)
+    stack_size += (16 - (stack_size + 8) % 16) % 16;
+
+    dynasm!(self.assembler
+      ; .arch x64
+      ; sub rsp, stack_size as i32
+    );
+    self.allocated_stack = stack_size;
+  }
+
+  fn deallocate_stack(&mut self) {
+    dynasm!(self.assembler
+      ; .arch x64
+      ; add rsp, self.allocated_stack as i32
+    );
+  }
+
+  fn call(&mut self, ptr: *const c_void) {
+    // the stack has been aligned during stack allocation
+    dynasm!(self.assembler
+      ; .arch x64
+      ; mov rax, QWORD ptr as _
+      ; call rax
+    );
+  }
+
+  fn tailcall(&mut self, ptr: *const c_void) {
+    // stack pointer is never modified and remains aligned
+    // return address remains the one provided by the trampoline's caller (V8)
+    dynasm!(self.assembler
+      ; .arch x64
+      ; mov rax, QWORD ptr as _
+      ; jmp rax
+    );
+  }
+
+  fn ret(&mut self) {
+    // the stack has been deallocated before ret is called
+    dynasm!(self.assembler
+      ; .arch x64
+      ; ret
+    );
+  }
+
+  fn is_recv_overriden(&self) -> bool {
+    self.args > 0
+  }
+
+  fn must_cast_return_value(&self, rv: NativeType) -> bool {
+    // V8 only supports i32 and u32 return types for integers
+    // We support 8 and 16 bit integers by extending them to 32 bits in the trampoline before returning
+    matches!(
+      rv,
+      NativeType::U8 | NativeType::I8 | NativeType::U16 | NativeType::I16
+    )
+  }
+
+  fn finalize(self) -> ExecutableBuffer {
+    self.assembler.finalize().unwrap()
+  }
+}
+
 struct Aarch64 {
   assembler: dynasmrt::aarch64::Assembler,
   // As defined in section 6.4.2 of the Aarch64 Procedure Call Standard (PCS) spec, arguments are classified as follows:
@@ -1336,7 +1648,7 @@ impl Aarch64 {
     for argument in &sym.parameter_types {
       compiler.move_left(argument)
     }
-    if !compiler.integer_args_have_moved() {
+    if !compiler.is_recv_overriden() {
       // the receiver object should never be expected. Avoid its unexpected or deliverated leak
       compiler.zero_first_arg();
     }
@@ -1779,7 +2091,7 @@ impl Aarch64 {
     );
   }
 
-  fn integer_args_have_moved(&self) -> bool {
+  fn is_recv_overriden(&self) -> bool {
     self.integer_args > 0
   }
 
@@ -1837,16 +2149,21 @@ enum Size {
 }
 use Size::*;
 
+#[derive(Clone, Copy, Debug)]
+enum Argument {
+  I(Size),
+  F(Float),
+}
+
+use Argument::*;
+
 #[cfg(test)]
 mod tests {
-  use std::ops::Deref;
   use std::ptr::null_mut;
 
-  use dynasmrt::dynasm;
   use libffi::middle::Type;
 
-  use super::{Aarch64Apple, Trampoline};
-  use crate::NativeType::{self, *};
+  use crate::NativeType;
   use crate::Symbol;
 
   fn symbol(parameters: Vec<NativeType>, ret: NativeType) -> Symbol {
@@ -1859,43 +2176,91 @@ mod tests {
     }
   }
 
-  #[test]
-  fn tailcall() {
-    let trampoline = Aarch64Apple::compile(&symbol(
-      vec![
-        U8, U16, I16, I8, U32, U64, Pointer, Function, I64, I32, I16, I8, F32,
-        F32, F32, F32, F64, F64, F64, F64, F32, F64,
-      ],
-      Void,
-    ));
+  mod aarch64_apple {
+    use std::ops::Deref;
 
-    let mut assembler = dynasmrt::aarch64::Assembler::new().unwrap();
-    // See https://godbolt.org/z/Gr1Mcbch5
-    dynasm!(assembler
-      ; .arch aarch64
-      ; and w0, w1, 0xFF   // u8
-      ; and w1, w2, 0xFFFF // u16
-      ; sxth w2, w3        // i16
-      ; sxtb w3, w4        // i8
-      ; mov w4, w5         // u32
-      ; mov x5, x6         // u64
-      ; mov x6, x7         // Pointer
-      ; ldr x7, [sp]       // Function
-      ; ldr x8, [sp, 8]    // i64
-      ; str x8, [sp]       // ..
-      ; ldr w8, [sp, 16]   // i32
-      ; str w8, [sp, 8]    // ..
-      ; ldr w8, [sp, 20]   // i16
-      ; strh w8, [sp, 12]   // ..
-      ; ldr w8, [sp, 24]   // i8
-      ; strb w8, [sp, 14]   // ..
-      ; ldr s16, [sp, 28]  // f32
-      ; str s16, [sp, 16]  // ..
-      ; ldr d16, [sp, 32]  // f64
-      ; str d16, [sp, 24]  // ..
-      ; b 0
-    );
-    let expected = assembler.finalize().unwrap();
-    assert_eq!(trampoline.0.deref(), expected.deref());
+    use dynasmrt::dynasm;
+
+    use super::super::Aarch64Apple;
+    use super::symbol;
+    use crate::NativeType::*;
+
+    #[test]
+    fn tailcall() {
+      let trampoline = Aarch64Apple::compile(&symbol(
+        vec![
+          U8, U16, I16, I8, U32, U64, Pointer, Function, I64, I32, I16, I8,
+          F32, F32, F32, F32, F64, F64, F64, F64, F32, F64,
+        ],
+        Void,
+      ));
+
+      let mut assembler = dynasmrt::aarch64::Assembler::new().unwrap();
+      // See https://godbolt.org/z/Gr1Mcbch5
+      dynasm!(assembler
+        ; .arch aarch64
+        ; and w0, w1, 0xFF   // u8
+        ; and w1, w2, 0xFFFF // u16
+        ; sxth w2, w3        // i16
+        ; sxtb w3, w4        // i8
+        ; mov w4, w5         // u32
+        ; mov x5, x6         // u64
+        ; mov x6, x7         // Pointer
+        ; ldr x7, [sp]       // Function
+        ; ldr x8, [sp, 8]    // i64
+        ; str x8, [sp]       // ..
+        ; ldr w8, [sp, 16]   // i32
+        ; str w8, [sp, 8]    // ..
+        ; ldr w8, [sp, 20]   // i16
+        ; strh w8, [sp, 12]   // ..
+        ; ldr w8, [sp, 24]   // i8
+        ; strb w8, [sp, 14]   // ..
+        ; ldr s16, [sp, 28]  // f32
+        ; str s16, [sp, 16]  // ..
+        ; ldr d16, [sp, 32]  // f64
+        ; str d16, [sp, 24]  // ..
+        ; movz x8, 0
+        ; br x8
+      );
+      let expected = assembler.finalize().unwrap();
+      assert_eq!(trampoline.0.deref(), expected.deref());
+    }
+  }
+
+  mod x64_windows {
+    use std::ops::Deref;
+
+    use dynasmrt::{dynasm, DynasmApi};
+
+    use super::super::X64Windows;
+    use super::symbol;
+    use crate::NativeType::*;
+
+    #[test]
+    fn tailcall() {
+      let trampoline = X64Windows::compile(&symbol(
+        vec![U8, I16, F64, F32, U32, I8, Pointer],
+        Void,
+      ));
+
+      let mut assembler = dynasmrt::x64::Assembler::new().unwrap();
+      dynasm!(assembler
+        ; .arch x64
+        ; mov ecx, edx          // u8
+        ; mov edx, r8d         // i16
+        ; movaps xmm2, xmm3      // f64
+        ; movaps xmm3, [DWORD rsp + 40] // f32
+        ; mov eax, [DWORD rsp + 48]    // u32
+        ; mov [DWORD rsp + 40], eax    // ..
+        ; mov eax, [DWORD rsp + 56]    // i8
+        ; mov [DWORD rsp + 48], eax     // ..
+        ; mov rax, [DWORD rsp + 64]    // Pointer
+        ; mov [DWORD rsp + 56], rax    // ..
+        ; mov rax, QWORD 0
+        ; jmp rax
+      );
+      let expected = assembler.finalize().unwrap();
+      assert_eq!(trampoline.0.deref(), expected.deref());
+    }
   }
 }
