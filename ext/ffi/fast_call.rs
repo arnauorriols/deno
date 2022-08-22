@@ -21,16 +21,18 @@ pub(crate) fn is_compatible(sym: &Symbol) -> bool {
   )) && !sym.can_callback
 }
 
-pub(crate) fn compile_trampoline(sym: &Symbol) -> Trampoline {
-  #[cfg(all(target_arch = "x86_64", target_family = "unix"))]
-  return SysVAmd64::compile(sym);
-  #[cfg(all(target_arch = "x86_64", target_family = "windows"))]
-  return Win64::compile(sym);
-  #[cfg(all(target_arch = "aarch64", target_vendor = "apple"))]
-  return Aarch64Apple::compile(sym);
-  #[allow(unreachable_code)]
-  {
-    unimplemented!("fast API is not implemented for the current target");
+pub(crate) fn compile_trampoline(sym: &Symbol) -> Option<Trampoline> {
+  if sym.can_callback {
+    // Callbacks are not allowed in Fast API FFI
+    None
+  } else if cfg!(all(target_arch = "x86_64", target_family = "unix")) {
+    Some(SysVAmd64::compile(sym))
+  } else if cfg!(all(target_arch = "x86_64", target_family = "windows")) {
+    Some(Win64::compile(sym))
+  } else if cfg!(all(target_arch = "aarch64", target_vendor = "apple")) {
+    Some(Aarch64Apple::compile(sym))
+  } else {
+    None
   }
 }
 
