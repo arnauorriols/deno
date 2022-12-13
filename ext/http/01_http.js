@@ -370,6 +370,9 @@
           }
           ws[_serverHandleIdleTimeout]();
         }
+      } catch(error) {
+        console.log("[deno]", error);
+        throw error;
       } finally {
         if (SetPrototypeDelete(httpConn.managedResources, streamRid)) {
           core.close(streamRid);
