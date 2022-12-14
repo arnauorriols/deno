@@ -371,7 +371,7 @@
           ws[_serverHandleIdleTimeout]();
         }
       } catch(error) {
-        Deno.__deployLogToStdout("[deno] error in respondWith", error);
+        ops.op_deploy_log_to_stdout("[deno][respondWith] " + error);
         throw error;
       } finally {
         if (SetPrototypeDelete(httpConn.managedResources, streamRid)) {
